@@ -24,7 +24,7 @@ Windows OS: The `Downloader.exe` file is designed for Windows.
 
 FFmpeg: Ensure FFmpeg is installed and added to your system's PATH for audio conversion.
 
-The only Installation needed is to run ``pip install -r requirements.txt```
+The only Installation needed is to run ```pip install -r requirements.txt```
 
 ## Steps to Use
 ### Download the Application:
