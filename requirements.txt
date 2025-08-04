@@ -1,4 +1,4 @@
-spotipy
-yt-dlp
-ffmpeg
-pyqt5
+spotipy>=2.23.0
+yt-dlp>=2023.12.30
+PyQt5>=5.15.0
+requests>=2.31.0

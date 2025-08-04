@@ -1,14 +1,18 @@
 import sys
 import os
 import re
+import json
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import yt_dlp
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                            QTextEdit, QRadioButton, QFileDialog)
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+                            QTextEdit, QRadioButton, QFileDialog, QStackedWidget,
+                            QListWidget, QListWidgetItem, QCheckBox, QComboBox,
+                            QProgressBar, QFrame, QScrollArea, QGridLayout,
+                            QMessageBox, QSpacerItem, QSizePolicy, QGroupBox)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QFont, QIcon, QPixmap, QPalette, QColor
 
 # Simple XOR encryption key
 ENCRYPTION_KEY = b"SpotifyDownloader2025"
@@ -25,126 +29,185 @@ def decrypt_credentials(encrypted_hex):
     decrypted = bytes(a ^ b for a, b in zip(encrypted_bytes, key_bytes[:len(encrypted_bytes)]))
     return decrypted.decode('utf-8')
 
-class SpotifyDownloader(QMainWindow):
-    def __init__(self):
+class DownloadWorker(QThread):
+    progress = pyqtSignal(str)
+    song_progress = pyqtSignal(str, int)
+    download_complete = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, songs, output_folder, format_choice, quality):
         super().__init__()
-        self.setWindowTitle("Spotify Downloader")
-        self.setGeometry(100, 100, 500, 600)
-        self.sp = None
+        self.songs = songs
+        self.output_folder = output_folder
+        self.format_choice = format_choice
+        self.quality = quality
+        self.is_running = True
+
+    def run(self):
+        try:
+            for i, song in enumerate(self.songs):
+                if not self.is_running:
+                    break
+                
+                self.progress.emit(f"Downloading: {song}")
+                self.song_progress.emit(song, int((i / len(self.songs)) * 100))
+                
+                query = f"ytsearch:{song.strip()} audio"
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': f'{self.output_folder}/%(title)s.%(ext)s',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': self.format_choice,
+                        'preferredquality': self.quality,
+                    }],
+                    'quiet': True,
+                }
+                
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([query])
+            
+            self.download_complete.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def stop(self):
+        self.is_running = False
+
+class LoginScreen(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
         self.init_ui()
 
     def init_ui(self):
-        # Spotify-inspired style
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #181818;
-            }
-            QLabel {
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(40, 40, 40, 40)
+
+        # Logo/Title
+        title = QLabel("Spotify Downloader")
+        title.setFont(QFont("Helvetica", 24, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #1DB954; margin-bottom: 20px;")
+        layout.addWidget(title)
+
+        # Subtitle
+        subtitle = QLabel("Download your favorite playlists")
+        subtitle.setFont(QFont("Helvetica", 12))
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #B3B3B3; margin-bottom: 30px;")
+        layout.addWidget(subtitle)
+
+        # Credentials Group
+        credentials_group = QGroupBox("Spotify API Credentials")
+        credentials_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
                 color: #FFFFFF;
-                font-family: 'Circular', 'Helvetica', sans-serif;
+                border: 2px solid #3D3D3D;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
             }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        
+        credentials_layout = QVBoxLayout(credentials_group)
+        credentials_layout.setSpacing(15)
+
+        # Client ID
+        self.client_id = QLineEdit()
+        self.client_id.setPlaceholderText("Client ID")
+        self.client_id.setStyleSheet("""
             QLineEdit {
                 background-color: #121212;
                 color: #FFFFFF;
-                border: 1px solid #3D3D3D;
-                border-radius: 4px;
-                padding: 8px;
+                border: 2px solid #3D3D3D;
+                border-radius: 6px;
+                padding: 12px;
+                font-size: 14px;
             }
             QLineEdit:focus {
-                border: 1px solid #1DB954;
+                border: 2px solid #1DB954;
             }
+        """)
+        credentials_layout.addWidget(self.client_id)
+
+        # Client Secret
+        self.client_secret = QLineEdit()
+        self.client_secret.setPlaceholderText("Client Secret")
+        self.client_secret.setEchoMode(QLineEdit.Password)
+        self.client_secret.setStyleSheet("""
+            QLineEdit {
+                background-color: #121212;
+                color: #FFFFFF;
+                border: 2px solid #3D3D3D;
+                border-radius: 6px;
+                padding: 12px;
+                font-size: 14px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #1DB954;
+            }
+        """)
+        credentials_layout.addWidget(self.client_secret)
+
+        layout.addWidget(credentials_group)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        self.login_btn = QPushButton("Login")
+        self.login_btn.setStyleSheet("""
             QPushButton {
                 background-color: #1DB954;
                 color: #FFFFFF;
                 border: none;
-                border-radius: 20px;
-                padding: 8px 16px;
-                font-family: 'Circular', 'Helvetica', sans-serif;
+                border-radius: 25px;
+                padding: 12px 30px;
+                font-size: 16px;
                 font-weight: bold;
             }
             QPushButton:hover {
                 background-color: #1ED760;
             }
-            QTextEdit {
-                background-color: #121212;
-                color: #B3B3B3;
-                border: 1px solid #3D3D3D;
-                border-radius: 4px;
-                padding: 5px;
-            }
-            QRadioButton {
-                color: #B3B3B3;
-            }
-            QRadioButton::indicator:checked {
-                background-color: #1DB954;
+            QPushButton:pressed {
+                background-color: #1AA34A;
             }
         """)
+        self.login_btn.clicked.connect(self.login)
+        button_layout.addWidget(self.login_btn)
 
-        # Main widget and layout
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        layout = QVBoxLayout(main_widget)
-        layout.setSpacing(15)
-        layout.setContentsMargins(20, 20, 20, 20)
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #535353;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 25px;
+                padding: 12px 30px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #6B6B6B;
+            }
+        """)
+        self.clear_btn.clicked.connect(self.clear_credentials)
+        button_layout.addWidget(self.clear_btn)
 
-        # Title
-        title = QLabel("Spotify Downloader")
-        title.setFont(QFont("Helvetica", 18, QFont.Bold))
-        layout.addWidget(title)
+        layout.addLayout(button_layout)
 
-        # Credentials
-        self.client_id = QLineEdit()
-        self.client_id.setPlaceholderText("Client ID")
-        layout.addWidget(self.client_id)
-
-        self.client_secret = QLineEdit()
-        self.client_secret.setPlaceholderText("Client Secret")
-        self.client_secret.setEchoMode(QLineEdit.Password)
-        layout.addWidget(self.client_secret)
-
-        # Connect/Logout Buttons
-        auth_layout = QHBoxLayout()
-        connect_btn = QPushButton("Connect")
-        connect_btn.clicked.connect(self.connect_spotify)
-        logout_btn = QPushButton("Logout")
-        logout_btn.clicked.connect(self.logout)
-        auth_layout.addWidget(connect_btn)
-        auth_layout.addWidget(logout_btn)
-        layout.addLayout(auth_layout)
-
-        # Playlist
-        self.playlist_url = QLineEdit()
-        self.playlist_url.setPlaceholderText("Playlist URL")
-        layout.addWidget(self.playlist_url)
-
-        load_btn = QPushButton("Load Playlist")
-        load_btn.clicked.connect(self.load_playlist)
-        layout.addWidget(load_btn)
-
-        # Format Selection
-        format_layout = QHBoxLayout()
-        self.mp3_radio = QRadioButton("MP3")
-        self.mp3_radio.setChecked(True)
-        self.wav_radio = QRadioButton("WAV")
-        format_layout.addWidget(self.mp3_radio)
-        format_layout.addWidget(self.wav_radio)
-        format_layout.addStretch()
-        layout.addLayout(format_layout)
-
-        # Songs Display
-        self.songs_display = QTextEdit()
-        self.songs_display.setReadOnly(True)
-        layout.addWidget(self.songs_display)
-
-        # Download/Clear Buttons
-        btn_layout = QHBoxLayout()
-        download_btn = QPushButton("Download")
-        download_btn.clicked.connect(self.download_songs)
-        clear_btn = QPushButton("Clear")
-        clear_btn.clicked.connect(self.clear_songs)
-        btn_layout.addWidget(download_btn)
-        btn_layout.addWidget(clear_btn)
-        layout.addLayout(btn_layout)
+        # Status
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("color: #B3B3B3; margin-top: 10px;")
+        layout.addWidget(self.status_label)
 
         layout.addStretch()
         self.load_credentials()
@@ -159,9 +222,8 @@ class SpotifyDownloader(QMainWindow):
                         client_secret = decrypt_credentials(lines[1].strip())
                         self.client_id.setText(client_id)
                         self.client_secret.setText(client_secret)
-                        self.connect_spotify()
             except Exception as e:
-                self.songs_display.setText(f"Error loading credentials: {str(e)}")
+                self.status_label.setText(f"Error loading credentials: {str(e)}")
 
     def save_credentials(self):
         try:
@@ -170,105 +232,529 @@ class SpotifyDownloader(QMainWindow):
             with open("credential.cdi", "w", encoding="utf-8") as file:
                 file.write(f"{encrypted_id}\n{encrypted_secret}")
         except Exception as e:
-            self.songs_display.setText(f"Error saving credentials: {str(e)}")
+            self.status_label.setText(f"Error saving credentials: {str(e)}")
 
-    def connect_spotify(self):
+    def login(self):
+        if not self.client_id.text() or not self.client_secret.text():
+            self.status_label.setText("Please enter both Client ID and Client Secret")
+            return
+
         try:
-            self.sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+            self.parent.sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
                 client_id=self.client_id.text(),
                 client_secret=self.client_secret.text()
             ))
             self.save_credentials()
-            self.songs_display.setText("Connected to Spotify.")
+            self.status_label.setText("Login successful!")
+            QTimer.singleShot(1000, self.parent.show_main_screen)
         except Exception as e:
-            self.songs_display.setText(f"Connection failed: {str(e)}")
+            self.status_label.setText(f"Login failed: {str(e)}")
 
-    def logout(self):
-        if os.path.exists("credential.cdi"):
-            os.remove("credential.cdi")
+    def clear_credentials(self):
         self.client_id.clear()
         self.client_secret.clear()
-        self.sp = None
-        self.songs_display.setText("Logged out successfully.")
+        if os.path.exists("credential.cdi"):
+            os.remove("credential.cdi")
+        self.status_label.setText("Credentials cleared")
 
-    def load_playlist(self):
-        if not self.sp:
-            self.songs_display.setText("Please connect to Spotify first.")
+class MainScreen(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.selected_playlist = None
+        self.songs = []
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(30, 30, 30, 30)
+
+        # Header
+        header_layout = QHBoxLayout()
+        
+        title = QLabel("Spotify Playlist Downloader")
+        title.setFont(QFont("Helvetica", 20, QFont.Bold))
+        title.setStyleSheet("color: #FFFFFF;")
+        header_layout.addWidget(title)
+
+        header_layout.addStretch()
+
+        self.logout_btn = QPushButton("Logout")
+        self.logout_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #535353;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 20px;
+                padding: 8px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #6B6B6B;
+            }
+        """)
+        self.logout_btn.clicked.connect(self.logout)
+        header_layout.addWidget(self.logout_btn)
+
+        layout.addLayout(header_layout)
+
+        # Main content area
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(20)
+
+        # Left panel - Playlist Input
+        left_panel = QFrame()
+        left_panel.setStyleSheet("""
+            QFrame {
+                background-color: #121212;
+                border: 2px solid #3D3D3D;
+                border-radius: 8px;
+            }
+        """)
+        left_layout = QVBoxLayout(left_panel)
+
+        playlist_label = QLabel("Playlist Input")
+        playlist_label.setFont(QFont("Helvetica", 14, QFont.Bold))
+        playlist_label.setStyleSheet("color: #FFFFFF; padding: 10px;")
+        left_layout.addWidget(playlist_label)
+
+        # Playlist URL input
+        playlist_url_label = QLabel("Playlist URL")
+        playlist_url_label.setFont(QFont("Helvetica", 12, QFont.Bold))
+        playlist_url_label.setStyleSheet("color: #FFFFFF; padding: 10px 0;")
+        left_layout.addWidget(playlist_url_label)
+
+        self.playlist_url = QLineEdit()
+        self.playlist_url.setPlaceholderText("Paste Spotify playlist URL here...")
+        self.playlist_url.setStyleSheet("""
+            QLineEdit {
+                background-color: #2A2A2A;
+                color: #FFFFFF;
+                border: 2px solid #3D3D3D;
+                border-radius: 6px;
+                padding: 10px;
+                font-size: 14px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #1DB954;
+            }
+        """)
+        left_layout.addWidget(self.playlist_url)
+
+        # Load playlist button
+        self.load_playlist_btn = QPushButton("Load Playlist")
+        self.load_playlist_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1DB954;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 20px;
+                padding: 10px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1ED760;
+            }
+        """)
+        self.load_playlist_btn.clicked.connect(self.load_playlist_songs)
+        left_layout.addWidget(self.load_playlist_btn)
+
+        left_layout.addStretch()
+
+        content_layout.addWidget(left_panel, 1)
+
+        # Right panel - Songs and Controls
+        right_panel = QFrame()
+        right_panel.setStyleSheet("""
+            QFrame {
+                background-color: #121212;
+                border: 2px solid #3D3D3D;
+                border-radius: 8px;
+            }
+        """)
+        right_layout = QVBoxLayout(right_panel)
+
+        # Quality and Format Settings
+        settings_group = QGroupBox("Download Settings")
+        settings_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                color: #FFFFFF;
+                border: 2px solid #3D3D3D;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        
+        settings_layout = QGridLayout(settings_group)
+
+        # Format selection
+        format_label = QLabel("Format:")
+        format_label.setStyleSheet("color: #B3B3B3;")
+        settings_layout.addWidget(format_label, 0, 0)
+
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["MP3", "WAV", "FLAC", "AAC"])
+        self.format_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2A2A2A;
+                color: #FFFFFF;
+                border: 1px solid #3D3D3D;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #FFFFFF;
+            }
+        """)
+        settings_layout.addWidget(self.format_combo, 0, 1)
+
+        # Quality selection
+        quality_label = QLabel("Quality:")
+        quality_label.setStyleSheet("color: #B3B3B3;")
+        settings_layout.addWidget(quality_label, 1, 0)
+
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems(["128k", "192k", "256k", "320k"])
+        self.quality_combo.setCurrentText("192k")
+        self.quality_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2A2A2A;
+                color: #FFFFFF;
+                border: 1px solid #3D3D3D;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #FFFFFF;
+            }
+        """)
+        settings_layout.addWidget(self.quality_combo, 1, 1)
+
+        right_layout.addWidget(settings_group)
+
+        # Songs section
+        songs_label = QLabel("Songs")
+        songs_label.setFont(QFont("Helvetica", 14, QFont.Bold))
+        songs_label.setStyleSheet("color: #FFFFFF; padding: 10px 0;")
+        right_layout.addWidget(songs_label)
+
+        # Select all/none buttons
+        select_layout = QHBoxLayout()
+        
+        self.select_all_btn = QPushButton("Select All")
+        self.select_all_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1DB954;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 15px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1ED760;
+            }
+        """)
+        self.select_all_btn.clicked.connect(self.select_all_songs)
+        select_layout.addWidget(self.select_all_btn)
+
+        self.deselect_all_btn = QPushButton("Deselect All")
+        self.deselect_all_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #535353;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 15px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #6B6B6B;
+            }
+        """)
+        self.deselect_all_btn.clicked.connect(self.deselect_all_songs)
+        select_layout.addWidget(self.deselect_all_btn)
+
+        select_layout.addStretch()
+        right_layout.addLayout(select_layout)
+
+        # Songs list
+        self.songs_list = QListWidget()
+        self.songs_list.setStyleSheet("""
+            QListWidget {
+                background-color: #121212;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #3D3D3D;
+            }
+            QListWidget::item:hover {
+                background-color: #2A2A2A;
+            }
+        """)
+        right_layout.addWidget(self.songs_list)
+
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #3D3D3D;
+                border-radius: 5px;
+                text-align: center;
+                background-color: #121212;
+            }
+            QProgressBar::chunk {
+                background-color: #1DB954;
+                border-radius: 3px;
+            }
+        """)
+        right_layout.addWidget(self.progress_bar)
+
+        # Download button
+        self.download_btn = QPushButton("Download Selected Songs")
+        self.download_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1DB954;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 25px;
+                padding: 12px 20px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1ED760;
+            }
+            QPushButton:disabled {
+                background-color: #535353;
+            }
+        """)
+        self.download_btn.clicked.connect(self.download_songs)
+        self.download_btn.setEnabled(False)
+        right_layout.addWidget(self.download_btn)
+
+        content_layout.addWidget(right_panel, 2)
+        layout.addLayout(content_layout)
+
+    def load_playlist_songs(self):
+        if not self.parent.sp:
+            QMessageBox.warning(self, "Error", "Please login to Spotify first.")
             return
 
-        playlist_url = self.playlist_url.text()
+        playlist_url = self.playlist_url.text().strip()
+        if not playlist_url:
+            QMessageBox.warning(self, "Error", "Please enter a playlist URL.")
+            return
+
         match = re.search(r"playlist/([\w\d]+)", playlist_url)
         if not match:
-            self.songs_display.setText("Invalid playlist URL.")
+            QMessageBox.warning(self, "Error", "Invalid playlist URL. Please enter a valid Spotify playlist URL.")
             return
 
         try:
             playlist_id = match.group(1)
-            playlist_info = self.sp.playlist(playlist_id)
+            playlist_info = self.parent.sp.playlist(playlist_id)
             tracks = []
             offset = 0
             limit = 100
 
             while True:
-                results = self.sp.playlist_tracks(playlist_id, offset=offset, limit=limit)
-                for item in results['items']:
-                    track = item['track']
-                    name = track['name']
-                    artist = track['artists'][0]['name']
-                    tracks.append(f"{name} - {artist}")
+                results = self.parent.sp.playlist_tracks(playlist_id, offset=offset, limit=limit)
+                for track_item in results['items']:
+                    track = track_item['track']
+                    if track:
+                        name = track['name']
+                        artist = track['artists'][0]['name']
+                        tracks.append(f"{name} - {artist}")
 
                 if len(results['items']) < limit:
                     break
                 offset += limit
 
-            self.songs_display.setText("\n".join(tracks))
-            self.songs_display.append(f"\nLoaded {len(tracks)} songs from '{playlist_info['name']}'")
+            self.songs = tracks
+            self.update_songs_list()
+            self.download_btn.setEnabled(True)
+            
+            # Show success message
+            QMessageBox.information(self, "Success", f"Loaded {len(tracks)} songs from '{playlist_info['name']}'")
+            
         except Exception as e:
-            self.songs_display.setText(f"Failed to load playlist: {str(e)}")
+            QMessageBox.warning(self, "Error", f"Failed to load playlist: {str(e)}")
+
+    def update_songs_list(self):
+        self.songs_list.clear()
+        for song in self.songs:
+            item = QListWidgetItem()
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            
+            checkbox = QCheckBox()
+            checkbox.setChecked(True)
+            checkbox.setStyleSheet("""
+                QCheckBox {
+                    color: #FFFFFF;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #1DB954;
+                    border: 2px solid #1DB954;
+                    border-radius: 3px;
+                }
+                QCheckBox::indicator:unchecked {
+                    background-color: #2A2A2A;
+                    border: 2px solid #3D3D3D;
+                    border-radius: 3px;
+                }
+            """)
+            
+            label = QLabel(song)
+            label.setStyleSheet("color: #FFFFFF;")
+            
+            layout.addWidget(checkbox)
+            layout.addWidget(label)
+            layout.addStretch()
+            layout.setContentsMargins(5, 5, 5, 5)
+            
+            item.setSizeHint(widget.sizeHint())
+            self.songs_list.addItem(item)
+            self.songs_list.setItemWidget(item, widget)
+
+    def select_all_songs(self):
+        for i in range(self.songs_list.count()):
+            item = self.songs_list.item(i)
+            widget = self.songs_list.itemWidget(item)
+            checkbox = widget.findChild(QCheckBox)
+            checkbox.setChecked(True)
+
+    def deselect_all_songs(self):
+        for i in range(self.songs_list.count()):
+            item = self.songs_list.item(i)
+            widget = self.songs_list.itemWidget(item)
+            checkbox = widget.findChild(QCheckBox)
+            checkbox.setChecked(False)
+
+    def get_selected_songs(self):
+        selected_songs = []
+        for i in range(self.songs_list.count()):
+            item = self.songs_list.item(i)
+            widget = self.songs_list.itemWidget(item)
+            checkbox = widget.findChild(QCheckBox)
+            if checkbox.isChecked():
+                label = widget.findChild(QLabel)
+                selected_songs.append(label.text())
+        return selected_songs
 
     def download_songs(self):
-        if not self.songs_display.toPlainText().strip():
-            self.songs_display.setText("No songs to download. Load a playlist first.")
+        selected_songs = self.get_selected_songs()
+        if not selected_songs:
+            QMessageBox.warning(self, "Warning", "Please select at least one song to download.")
             return
 
-        format_choice = "mp3" if self.mp3_radio.isChecked() else "wav"
         output_folder = QFileDialog.getExistingDirectory(self, "Select Download Folder")
         if not output_folder:
             return
 
-        os.makedirs(output_folder, exist_ok=True)
-        songs = self.songs_display.toPlainText().strip().split("\n")
+        format_choice = self.format_combo.currentText().lower()
+        quality = self.quality_combo.currentText()
 
-        try:
-            for song in songs:
-                if " - " not in song:  # Skip status messages
-                    continue
-                query = f"ytsearch:{song.strip()} audio"
-                ydl_opts = {
-                    'format': 'bestaudio/best',
-                    'outtmpl': f'{output_folder}/%(title)s.%(ext)s',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': format_choice,
-                        'preferredquality': '192',
-                    }],
-                    'quiet': False,
-                }
-                
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([query])
-            
-            self.songs_display.append(f"\nDownloaded to {output_folder}")
-        except Exception as e:
-            self.songs_display.setText(f"Download failed: {str(e)}")
+        self.download_worker = DownloadWorker(selected_songs, output_folder, format_choice, quality)
+        self.download_worker.progress.connect(self.update_progress)
+        self.download_worker.song_progress.connect(self.update_song_progress)
+        self.download_worker.download_complete.connect(self.download_finished)
+        self.download_worker.error.connect(self.download_error)
 
-    def clear_songs(self):
-        self.songs_display.clear()
-        self.playlist_url.clear()
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.download_btn.setEnabled(False)
+        self.download_worker.start()
+
+    def update_progress(self, message):
+        # You could add a status label here to show current song being downloaded
+        pass
+
+    def update_song_progress(self, song, progress):
+        self.progress_bar.setValue(progress)
+
+    def download_finished(self):
+        self.progress_bar.setVisible(False)
+        self.download_btn.setEnabled(True)
+        QMessageBox.information(self, "Success", "Download completed successfully!")
+
+    def download_error(self, error):
+        self.progress_bar.setVisible(False)
+        self.download_btn.setEnabled(True)
+        QMessageBox.critical(self, "Error", f"Download failed: {error}")
+
+    def logout(self):
+        if os.path.exists("credential.cdi"):
+            os.remove("credential.cdi")
+        self.parent.sp = None
+        self.parent.show_login_screen()
+
+class SpotifyDownloader(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Spotify Downloader")
+        self.setGeometry(100, 100, 1200, 800)
+        self.sp = None
+        self.init_ui()
+
+    def init_ui(self):
+        # Set up the stacked widget
+        self.stacked_widget = QStackedWidget()
+        self.setCentralWidget(self.stacked_widget)
+
+        # Create screens
+        self.login_screen = LoginScreen(self)
+        self.main_screen = MainScreen(self)
+
+        # Add screens to stacked widget
+        self.stacked_widget.addWidget(self.login_screen)
+        self.stacked_widget.addWidget(self.main_screen)
+
+        # Set up the main window style
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #181818;
+            }
+        """)
+
+        # Show login screen first
+        self.show_login_screen()
+
+    def show_login_screen(self):
+        self.stacked_widget.setCurrentWidget(self.login_screen)
+
+    def show_main_screen(self):
+        self.stacked_widget.setCurrentWidget(self.main_screen)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setFont(QFont("Helvetica", 10))  # Spotify uses Circular, but Helvetica is close
+    app.setFont(QFont("Helvetica", 10))
     window = SpotifyDownloader()
     window.show()
     sys.exit(app.exec_())
