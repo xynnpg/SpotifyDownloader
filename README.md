@@ -114,7 +114,7 @@ Downloading copyrighted material without proper authorization may violate Spotif
 
 ### System Requirements
 - **Windows**: Tested on Windows 10/11
-- **Linux**: Should work with PyQt5 support
+- **Linux**: Tested on Arch Linux
 - **macOS**: Should work with PyQt5 support
 - **Internet**: Required for Spotify API and YouTube downloads
 
